@@ -389,13 +389,13 @@ def run_thread_pool(max_workers: int, cat: str):
     # di_5 = {k: v.set_index('address').sort_index() for k, v in di_5.items() if v is not None}
     upd_slice = di_5['upd_slice']
     assert len(upd_slice) == 405
-    run_upd_thread_pool_executor(upd_slice, max_workers, cat=cat)
-    # run_upd_thread_pool_executor(upd_slice[0:], max_count)
+    # run_upd_thread_pool_executor(upd_slice, max_workers, cat=cat)
+    run_upd_thread_pool_executor(upd_slice[0:50], max_workers, cat=cat)
 
 
 if __name__ == '__main__':
     run_thread_pool(4, 'socks')     # запусить обработку с socks прокси
-    run_thread_pool(4, 'http')      # запусить обработку с http прокси
+    # run_thread_pool(4, 'http')      # запусить обработку с http прокси
     # requests_with_socks_proxy(proxy_id=0)
     # urlib_with_proxy(proxy_id=8)
     # try_requests_with_http_proxy()
