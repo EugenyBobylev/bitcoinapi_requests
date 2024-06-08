@@ -265,7 +265,7 @@ def update_address(upd_line, cat='socks') -> tuple[pd.DataFrame | None, str]:
     return tr_df, _error
 
 
-def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int = 8):
+def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int, cat: str):
     """Загрузить транзакции, преобразовать их в срезы"""
     futures = []
     executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -274,7 +274,7 @@ def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int = 8):
     for idx, upd_line in upd_slice.iterrows():
         # запусить все обработчики
         # future = executor.submit(update_address, upd_line, 'socks')
-        future = executor.submit(update_address, upd_line, 'http')
+        future = executor.submit(update_address, upd_line, cat)
         futures.append(future)
         start_count = start_count + 1
         if len(futures) < max_workers:
@@ -312,19 +312,9 @@ def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int = 8):
     print(len(upd_slice), start_count, done_count)
 
 
-@measure_mem
-def urllib_get():
-    # пробуем работу urllib_get_transactions
-    addr = random.choice(_addresses)
-    proxy = random.choice(_socks_proxies)
-    data, error = urllib_get_transactions(addr, proxy=socks_proxies[9])
-    print(f'address={addr}; len={len(data) if isinstance(data, pd.DataFrame) else data}; error="{error}"; {proxy=}')
-    pass
-
-
 @measure_time
 @measure_mem
-def requests_with_proxy(idx):
+def requests_with_socks_proxy(proxy_id):
     address = '35pgGeez3ou6ofrpjt8T7bvC9t6RrUK4p6'
     base_url = 'https://blockchain.info'
     limit = 50
@@ -335,8 +325,8 @@ def requests_with_proxy(idx):
     headers = {'useragent': useragent}
     request = Request(url, headers=headers)
 
-    proxy = _socks_proxies[idx]
-    proxy = {'https': f'socks5://{proxy}'}
+    proxy = _socks_proxies[proxy_id]
+    proxy = {'socks': f'socks5://{proxy}'}
 
     with requests.Session() as session:
         r = session.get(url, headers=headers, proxies=proxy, stream=True)
@@ -348,7 +338,7 @@ def requests_with_proxy(idx):
 
 @measure_time
 @measure_mem
-def urlib_with_proxy(idx):
+def urlib_with_proxy(proxy_id):
     address = '35pgGeez3ou6ofrpjt8T7bvC9t6RrUK4p6'
     base_url = 'https://blockchain.info'
     limit = 50
@@ -359,7 +349,7 @@ def urlib_with_proxy(idx):
     headers = {'useragent': useragent}
     request = Request(url, headers=headers)
 
-    proxy = _socks_proxies[idx]
+    proxy = _socks_proxies[proxy_id]
     opener: OpenerDirector = build_opener(ProxyHandler({'socks': f'socks5://{proxy}'}))
 
     with opener.open(request) as r:
@@ -393,21 +383,20 @@ def try_requests_with_http_proxy():
 
 @measure_time
 @measure_mem
-def main(max_count=8):
-    """Обновить данные на указанную метку времени"""
+def run_thread_pool(max_workers: int, cat: str):
+    """"""
     di_5 = csv2df('step_5')
     # di_5 = {k: v.set_index('address').sort_index() for k, v in di_5.items() if v is not None}
     upd_slice = di_5['upd_slice']
     assert len(upd_slice) == 405
-    run_upd_thread_pool_executor(upd_slice, max_count)
+    run_upd_thread_pool_executor(upd_slice, max_workers, cat=cat)
     # run_upd_thread_pool_executor(upd_slice[0:], max_count)
 
 
 if __name__ == '__main__':
-    main(4)
-    # пробуем работу urllib_get_transactions
-    # urllib_get()
-    # requests_with_proxy(0)
-    # urlib_with_proxy(8)
+    run_thread_pool(4, 'socks')     # запусить обработку с socks прокси
+    run_thread_pool(4, 'http')      # запусить обработку с http прокси
+    # requests_with_socks_proxy(proxy_id=0)
+    # urlib_with_proxy(proxy_id=8)
     # try_requests_with_http_proxy()
     pass
