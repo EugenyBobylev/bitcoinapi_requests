@@ -390,7 +390,7 @@ def run_thread_pool(max_workers: int, cat: str):
     upd_slice = di_5['upd_slice']
     assert len(upd_slice) == 405
     # run_upd_thread_pool_executor(upd_slice, max_workers, cat=cat)
-    run_upd_thread_pool_executor(upd_slice[0:50], max_workers, cat=cat)
+    run_upd_thread_pool_executor(upd_slice[0:40], max_workers, cat=cat)
 
 
 if __name__ == '__main__':
