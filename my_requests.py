@@ -185,6 +185,9 @@ def requests_get_transactions(address, limit=200, offset=0, proxy=None) -> tuple
         #     r = session.get(url, headers=headers, proxies=proxy, stream=True)
             status_code = r.status_code
             if status_code == 200:
+                with open(f'data/{address}.txt', mode='wt', encoding='utf-8') as f:
+                    txt = r.text
+                    f.write(txt)
                 data = r.json()
                 txs = rawaddr_to_txs(data)
                 df: pd.DataFrame = pd.DataFrame(txs)
