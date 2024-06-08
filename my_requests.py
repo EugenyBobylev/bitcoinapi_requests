@@ -299,15 +299,18 @@ def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int, cat:
             done_count = done_count + 1
 
     # проверим, есть ли завершенные задачи
+    seconds = 0;
     while len(futures) != 0:
         done = [future for future in futures if future.done()]
         if len(done) == 0:
             time.sleep(1.0)
+            seconds += 1
+            print(f'Waiting {seconds} sec.')
         else:
             for future in done:
                 futures.remove(future)
                 done_count = done_count + 1
-                print(f'{done_count=}')
+                print(f'{start_count=}; {done_count=}')
 
     print('wait shutdowt thread pool executor')
     executor.shutdown(wait=True)
@@ -393,7 +396,7 @@ def run_thread_pool(max_workers: int, cat: str):
     upd_slice = di_5['upd_slice']
     assert len(upd_slice) == 405
     # run_upd_thread_pool_executor(upd_slice, max_workers, cat=cat)
-    run_upd_thread_pool_executor(upd_slice[0:40], max_workers, cat=cat)
+    run_upd_thread_pool_executor(upd_slice[0:10], max_workers, cat=cat)
 
 
 if __name__ == '__main__':
