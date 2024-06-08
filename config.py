@@ -21,18 +21,13 @@ class Config(metaclass=SingletonMeta):
         load_dotenv(env_path)
 
         self.app_dir: str = str(Path(script_path).parent)
-        self.logs_dir = f"{self.app_dir}/logs"
 
         # proxies socks and http
         self.socks_proxies: list[str] = self._load_proxies_('socks')
         self.http_proxies: list[str] = self._load_proxies_('http')
         # redis
-        _port = os.getenv('REDIS_PORT', None)
-        self.redis_port: int = int(_port) if _port else None
-        self.redis_password: str = os.getenv('REDIS_PASSWORD', None)
-        # cron
-        self.minutes_cron_update_market_data: str = os.getenv('MINUTES_CRON_UPDATE_MARKET_DATE')
-        self.hours_cron_update_market_data: str = os.getenv('HOURS_CRON_UPDATE_MARKET_DATE')
+        chunk_size_str: str = os.getenv('CHUNK_SIZE', 20480)
+        self.chunk_size: int = int(chunk_size_str)
 
     def _load_proxies_(self, cat='socks') -> list[str]:
         """Загрузисть socks или http прокси из файла"""

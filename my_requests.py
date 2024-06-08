@@ -216,7 +216,7 @@ def requests_chunk_get_transactions(address, limit=200, offset=0, proxy=None) ->
 
     # делаем апи запрос
     error = ''
-    chunk_size = 1024 * 4
+    chunk_size = Config().chunk_size
     try:
         with requests.get(url, headers=headers, proxies=proxy, stream=True) as r:
             if r.ok:
@@ -342,7 +342,7 @@ def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int, cat:
         # обработка завершенных задач / получение результата
         for future in done:
             res, error = future.result()
-            print(f'tr_df={len(res) if isinstance(res, pd.DataFrame) else None}, "{error=}"')
+            print(f'tr_df={len(res) if isinstance(res, pd.DataFrame) else None}, {error=}')
             futures.remove(future)
             done_count = done_count + 1
 
@@ -358,9 +358,11 @@ def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int, cat:
             print(f'Waiting {seconds} sec.')
         else:
             for future in done:
+                res, error = future.result()
                 futures.remove(future)
                 done_count = done_count + 1
                 print(f'{start_count=}; {done_count=}')
+                print(f'tr_df={len(res) if isinstance(res, pd.DataFrame) else None}, {error=}')
 
     print('wait shutdowt thread pool executor')
     executor.shutdown(wait=True)
@@ -379,7 +381,7 @@ def requests_with_socks_proxy(proxy_id):
 
     useragent = get_user_agent()
     headers = {'useragent': useragent}
-    request = Request(url, headers=headers)
+    Request(url, headers=headers)
 
     proxy = _socks_proxies[proxy_id]
     proxy = {'socks': f'socks5://{proxy}'}
@@ -488,12 +490,12 @@ def run_thread_pool(max_workers: int, cat: str):
     # di_5 = {k: v.set_index('address').sort_index() for k, v in di_5.items() if v is not None}
     upd_slice = di_5['upd_slice']
     assert len(upd_slice) == 405
-    # run_upd_thread_pool_executor(upd_slice, max_workers, cat=cat)
-    run_upd_thread_pool_executor(upd_slice[:50], max_workers, cat=cat)
+    run_upd_thread_pool_executor(upd_slice, max_workers, cat=cat)
+    # run_upd_thread_pool_executor(upd_slice[:50], max_workers, cat=cat)
 
 
 if __name__ == '__main__':
-    run_thread_pool(4, 'socks')     # запусить обработку с socks прокси
+    run_thread_pool(8, 'socks')     # запусить обработку с socks прокси
     # run_thread_pool(4, 'http')      # запусить обработку с http прокси
     # requests_with_socks_proxy(proxy_id=0)
     # urlib_with_proxy(proxy_id=8)
