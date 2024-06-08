@@ -206,6 +206,7 @@ def requests_get_transactions(address, limit=200, offset=0, proxy=None) -> tuple
     return None, error
 
 
+is_remove_tmp = True
 def requests_chunk_get_transactions(address, limit=200, offset=0, proxy=None) -> tuple[pd.DataFrame | None, str]:
     """Запросить и вернуть транзакции по заданному адресу кошелька"""
     base_url = 'https://blockchain.info'
@@ -223,10 +224,15 @@ def requests_chunk_get_transactions(address, limit=200, offset=0, proxy=None) ->
                 with open(temp_file_name, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=chunk_size):
                         f.write(chunk)
-                # прочитать результат и удалить временный файл
+
+                # прочитать результат
                 with open(temp_file_name, 'rb') as f:
                     txt = f.read()
-                os.remove(temp_file_name)
+                # удалить временный файл
+                if is_remove_tmp:
+                    os.remove(temp_file_name)
+                else:
+                    print(f'tmp_file={temp_file_name}; {address=}; {proxy=}')
 
                 # обработать результат
                 data = json.loads(txt)
@@ -341,7 +347,9 @@ def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int, cat:
             done_count = done_count + 1
 
     # проверим, есть ли завершенные задачи
-    seconds = 0;
+    global is_remove_tmp
+    is_remove_tmp = False
+    seconds = 0
     while len(futures) != 0:
         done = [future for future in futures if future.done()]
         if len(done) == 0:
