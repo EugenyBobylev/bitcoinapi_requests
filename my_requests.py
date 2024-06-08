@@ -1,6 +1,7 @@
 import gc
 import json
 import os
+import tempfile
 import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen, build_opener, ProxyHandler, OpenerDirector
@@ -17,6 +18,7 @@ from fake_useragent import UserAgent
 from api import BantProxy
 from config import Config
 from utils import measure_time, UtcDate, measure_mem, int2float
+
 
 _addresses = [
     '3G98jSULfhrES1J9HKfZdDjXx1sTNvHkhN'
@@ -131,7 +133,7 @@ def get_socks_proxy():
 
 
 def get_http_proxy():
-    if socks_proxies is None or len(socks_proxies) == 0:
+    if http_proxies is None or len(http_proxies) == 0:
         return None
     pr: list[BantProxy] = [p for p in http_proxies if p.is_awailable()]
     while len(pr) == 0:
@@ -179,19 +181,18 @@ def requests_get_transactions(address, limit=200, offset=0, proxy=None) -> tuple
     headers = {'useragent': useragent}
 
     # делаем апи запрос
+    error = ''
     try:
         with requests.get(url, headers=headers, proxies=proxy, stream=True) as r:
-        # with requests.Session() as session:
-        #     r = session.get(url, headers=headers, proxies=proxy, stream=True)
             status_code = r.status_code
             if status_code == 200:
-                with open(f'data/{address}.txt', mode='wt', encoding='utf-8') as f:
-                    txt = r.text
-                    f.write(txt)
+                # with open(f'data/{address}.txt', mode='wt', encoding='utf-8') as f:
+                #     txt = r.text
+                #     f.write(txt)
                 data = r.json()
                 txs = rawaddr_to_txs(data)
                 df: pd.DataFrame = pd.DataFrame(txs)
-                return df, ''
+                return df, error
             if status_code == 429:
                 error = f'status_code={status_code}. Too Many Requests.  RateLimitError with proxies = {proxy}'
             elif status_code == 524:
@@ -200,6 +201,46 @@ def requests_get_transactions(address, limit=200, offset=0, proxy=None) -> tuple
                 error = f'status_code={status_code}. {r.text}. With proxies = {proxy}'
     except Exception as ex:
         error = f'Неизвестная ошибка = {ex}'
+    finally:
+        gc.collect()
+    return None, error
+
+
+def requests_chunk_get_transactions(address, limit=200, offset=0, proxy=None) -> tuple[pd.DataFrame | None, str]:
+    """Запросить и вернуть транзакции по заданному адресу кошелька"""
+    base_url = 'https://blockchain.info'
+    url = f'{base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
+    useragent = get_user_agent()
+    headers = {'useragent': useragent}
+
+    # делаем апи запрос
+    error = ''
+    chunk_size = 1024 * 4
+    try:
+        with requests.get(url, headers=headers, proxies=proxy, stream=True) as r:
+            if r.ok:
+                temp_file_name = tempfile.mktemp()
+                with open(temp_file_name, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        f.write(chunk)
+                # прочитать результат и удалить временный файл
+                with open(temp_file_name, 'rb') as f:
+                    txt = f.read()
+                os.remove(temp_file_name)
+
+                # обработать результат
+                data = json.loads(txt)
+                txs = rawaddr_to_txs(data)
+                tr_df: pd.DataFrame = pd.DataFrame(txs)
+                return tr_df, error
+            else:
+                r.raise_for_status()
+    except HTTPError as ex:
+        error = f'e{ex}'
+    except Exception as ex:
+        error = f'Неизвестная ошибка = {ex}'
+    finally:
+        gc.collect()
     return None, error
 
 
@@ -263,7 +304,8 @@ def update_address(upd_line, cat='socks') -> tuple[pd.DataFrame | None, str]:
         case _:
             proxy = None
 
-    tr_df, _error = requests_get_transactions(address, limit, proxy=proxy)
+    tr_df, _error = requests_chunk_get_transactions(address, limit, proxy=proxy)
+    # tr_df, _error = requests_get_transactions(address, limit, proxy=proxy)
     # tr_df, _error = urllib_get_transactions(address, limit, proxy=proxy)
     return tr_df, _error
 
@@ -367,6 +409,49 @@ def urlib_with_proxy(proxy_id):
 
 @measure_time
 @measure_mem
+def requests_with_chunk(address='bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h'):
+    base_url = 'https://blockchain.info'
+    limit = 2800
+    offset = 0
+    url = f'{base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
+    useragent = get_user_agent()
+    headers = {'useragent': useragent}
+    proxy_str = random.choice(_socks_proxies)
+    proxies = {'socks': f'socks5//{proxy_str}'}
+
+    # делаем апи запрос
+    error = ''
+    chunk_size = 1024 * 20
+    try:
+        with requests.get(url, headers=headers, proxies=proxies, stream=True) as r:
+            r.raise_for_status()
+            temp_file_name = tempfile.mktemp()
+            with open(temp_file_name, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    f.write(chunk)
+    except HTTPError as ex:
+        error = f'HTTPError {ex}'
+        print(error)
+    except Exception as ex:
+        error = f'Неизвестная ошибка = {ex}'
+        print(error)
+    
+    if error == '':
+        with open(temp_file_name, 'rb') as f:
+            txt = f.read()
+        os.remove(temp_file_name)
+        data = json.loads(txt)
+        txs = rawaddr_to_txs(data)
+        tr_df: pd.DataFrame = pd.DataFrame(txs)
+        print(f'{len(tr_df)=}')
+
+        gc.collect(0)
+        gc.collect(1)
+        gc.collect(2)
+
+
+@measure_time
+@measure_mem
 def try_requests_with_http_proxy():
     """Пробую requests с http прокси"""
     count_before = len(gc.get_objects())
@@ -396,7 +481,7 @@ def run_thread_pool(max_workers: int, cat: str):
     upd_slice = di_5['upd_slice']
     assert len(upd_slice) == 405
     # run_upd_thread_pool_executor(upd_slice, max_workers, cat=cat)
-    run_upd_thread_pool_executor(upd_slice[0:10], max_workers, cat=cat)
+    run_upd_thread_pool_executor(upd_slice[:50], max_workers, cat=cat)
 
 
 if __name__ == '__main__':
@@ -405,4 +490,5 @@ if __name__ == '__main__':
     # requests_with_socks_proxy(proxy_id=0)
     # urlib_with_proxy(proxy_id=8)
     # try_requests_with_http_proxy()
+    # requests_with_chunk()
     pass
