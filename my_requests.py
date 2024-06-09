@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import requests
 from fake_useragent import UserAgent
+from requests import RequestException
 
 from api import BantProxy
 from config import Config
@@ -219,6 +220,7 @@ def requests_chunk_get_transactions(address, limit=200, offset=0, proxy=None) ->
     chunk_size = Config().chunk_size
     try:
         with requests.get(url, headers=headers, proxies=proxy, stream=True) as r:
+            r.raise_for_status()
             if r.ok:
                 temp_file_name = tempfile.mktemp()
                 with open(temp_file_name, 'wb') as f:
@@ -239,10 +241,10 @@ def requests_chunk_get_transactions(address, limit=200, offset=0, proxy=None) ->
                 txs = rawaddr_to_txs(data)
                 tr_df: pd.DataFrame = pd.DataFrame(txs)
                 return tr_df, error
-            else:
-                r.raise_for_status()
+    except RequestException as ex:
+        error = f'RequestException: {ex}'
     except HTTPError as ex:
-        error = f'e{ex}'
+        error = f'HTTPError: {ex}'
     except Exception as ex:
         error = f'Неизвестная ошибка = {ex}'
     finally:
