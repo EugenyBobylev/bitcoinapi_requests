@@ -285,10 +285,10 @@ def df2csv(df: DataFrame, filename_csv: str, index=True, mode='w'):
     df.to_csv(filename_csv, index=index, mode=mode)
 
 
-def csv2df(filename) -> DataFrame | None:
+def csv2df(filename, sep=',') -> DataFrame | None:
     path = Path(filename)
     if path.exists():
-        df = pd.read_csv(filename)
+        df = pd.read_csv(filename, sep=sep)
         return df
     return None
 
@@ -327,8 +327,8 @@ def slices_data(data: list, cnt: int = 200) -> list[list]:
     return slices
 
 
-def int2float(int_val: int) -> float:
-    """Преобразовать целочисленное значение баланса из формата bitcoin api в доллары и центы"""
+def satoshi2btc(int_val: int) -> float:
+    """Преобразовать целочисленное значение баланса в сатщши в btc"""
     sign = '-' if int_val < 0 else ''
     if int_val < 0:
         int_val = -int_val
@@ -343,7 +343,7 @@ def int2float(int_val: int) -> float:
 
 def get_int_count(float_val: float) -> int:
     """Вернуть количество знаков в целой части числа с плавающей точной"""
-    cnt = int(math.log10(float_val) + 1)
+    cnt = int(math.log10(3478.70645) + 1)
     return cnt
 
 
@@ -361,8 +361,7 @@ def measure_mem(func):
         result = func(*args, **kwargs)
         mem_after = process_memory()
         delta_mem = (mem_after - mem_before) // 1024
-        print(f"{func.__name__}:consumed memory: mem_before={mem_before // mb}Mb, mem_after={mem_after // mb}Mb, "
-              f"{delta_mem=}kb")
+        print(f"{func.__name__}:consumed memory: mem_before={mem_before // mb}Mb, mem_after={mem_after // mb}Mb, {delta_mem=}kb")
         return result
     return wrapper
 

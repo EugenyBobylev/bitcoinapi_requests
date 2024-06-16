@@ -4,22 +4,19 @@ import os
 import tempfile
 import time
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen, build_opener, ProxyHandler, OpenerDirector
 from concurrent.futures import ThreadPoolExecutor
-from http.client import HTTPResponse
 import random
-from typing import Callable
 
 import numpy as np
 import pandas as pd
 import requests
 from fake_useragent import UserAgent
 from requests import RequestException
+from requests.exceptions import ChunkedEncodingError
 
-from api import BantProxy
+from api import BantProxy, BinanceApi
 from config import Config
-from utils import measure_time, UtcDate, measure_mem, int2float
-
+from utils import measure_time, UtcDate, measure_mem, satoshi2btc, slices_data
 
 _addresses = [
     '3G98jSULfhrES1J9HKfZdDjXx1sTNvHkhN'
@@ -54,7 +51,6 @@ _socks_proxies = [
     'AwczwHgfx:nqwk7G9VX@176.116.20.173:64165',
 ]
 
-
 _http_proxies = [
     'AwczwHgfx:nqwk7G9VX@176.116.20.173:64164',
     'wErWgweRd:d3Nag4GER@46.3.94.145:64334',
@@ -70,6 +66,18 @@ _http_proxies = [
 
 socks_proxies: list[BantProxy] = [BantProxy(proxy, 10) for proxy in Config().socks_proxies]
 http_proxies: list[BantProxy] = [BantProxy(proxy, 10) for proxy in Config().http_proxies]
+
+base_url = 'https://blockchain.info'
+
+
+cohorts = [
+    {'min_val': 0, 'max_val': 1, 'code': '0'},
+    {'min_val': 1, 'max_val': 100, 'code': 'a'},
+    {'min_val': 100, 'max_val': 1000, 'code': 'b'},
+    {'min_val': 1000, 'max_val': 10000, 'code': 'c'},
+    {'min_val': 10000, 'max_val': 100000, 'code': 'd'},
+    {'min_val': 100000, 'max_val': None, 'code': 'e'},
+]
 
 
 def csv2df(subdir='') -> dict[str, pd.DataFrame]:
@@ -96,21 +104,34 @@ def csv2df(subdir='') -> dict[str, pd.DataFrame]:
     return df_info
 
 
+def get_cohort(btc: float) -> str:
+    """Определить когорту"""
+    for cohort_data in cohorts:
+        if cohort_data['max_val'] is None:
+            return cohort_data['code']
+        if cohort_data['min_val'] <= btc < cohort_data['max_val']:
+            return cohort_data['code']
+    return ''
+
+
 def calc_limit(upd_line) -> int:
+    max_tr = 2800
     n_tr = upd_line.n_tr
+    if n_tr < 0:
+        return max_tr
     if n_tr < 50:
         return 100
     if n_tr <= 1000:
         n_tr = n_tr * 2
         return n_tr
-    if 1000 < n_tr <= 2800:
+    if 1000 < n_tr <= max_tr:
         return n_tr
     else:
         n_tr = n_tr - upd_line.n_tr_prev
         if n_tr < 1000:
             n_tr += 1000
             return n_tr
-    return 2800
+    return max_tr
 
 
 def get_user_agent():
@@ -134,16 +155,15 @@ def get_socks_proxy():
 
 
 def get_http_proxy():
-    if http_proxies is None or len(http_proxies) == 0:
+    if socks_proxies is None or len(http_proxies) == 0:
         return None
     pr: list[BantProxy] = [p for p in http_proxies if p.is_awailable()]
     while len(pr) == 0:
         time.sleep(0.5)
-        pr: list[BantProxy] = [p for p in socks_proxies if p.is_awailable()]
+        pr: list[BantProxy] = [p for p in http_proxies if p.is_awailable()]
     pr.sort(key=lambda p: p.count)
     ok, http_proxy = pr[0].get_poxy()
     proxy = {'https': f'http://{http_proxy}'}
-    # proxy = http_proxy
     return proxy
 
 
@@ -153,7 +173,7 @@ def rawaddr_to_txs(data) -> [dict]:
         """Преобразовать из int в float"""
         keys = ['tx_btc', 'balance_btc']
         for key in keys:
-            item[key] = int2float(item[key])
+            item[key] = satoshi2btc(item[key])
         return item
 
     if (not isinstance(data, dict)) or ('address' not in data) or ('txs' not in data):
@@ -176,24 +196,19 @@ def rawaddr_to_txs(data) -> [dict]:
 
 def requests_get_transactions(address, limit=200, offset=0, proxy=None) -> tuple[pd.DataFrame | None, str]:
     """Запросить и вернуть транзакции по заданному адресу кошелька"""
-    base_url = 'https://blockchain.info'
     url = f'{base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
     useragent = get_user_agent()
     headers = {'useragent': useragent}
 
     # делаем апи запрос
-    error = ''
     try:
         with requests.get(url, headers=headers, proxies=proxy, stream=True) as r:
             status_code = r.status_code
             if status_code == 200:
-                # with open(f'data/{address}.txt', mode='wt', encoding='utf-8') as f:
-                #     txt = r.text
-                #     f.write(txt)
                 data = r.json()
                 txs = rawaddr_to_txs(data)
                 df: pd.DataFrame = pd.DataFrame(txs)
-                return df, error
+                return df, ''
             if status_code == 429:
                 error = f'status_code={status_code}. Too Many Requests.  RateLimitError with proxies = {proxy}'
             elif status_code == 524:
@@ -202,22 +217,20 @@ def requests_get_transactions(address, limit=200, offset=0, proxy=None) -> tuple
                 error = f'status_code={status_code}. {r.text}. With proxies = {proxy}'
     except Exception as ex:
         error = f'Неизвестная ошибка = {ex}'
-    finally:
-        gc.collect()
     return None, error
 
 
 is_remove_tmp = True
-def requests_chunk_get_transactions(address, limit=200, offset=0, proxy=None) -> tuple[pd.DataFrame | None, str]:
+
+
+def requests_chunk_get_transactions(address, limit=200, offset=0, proxy=None, chunk_size: int = 10240) -> tuple[pd.DataFrame | None, str]:
     """Запросить и вернуть транзакции по заданному адресу кошелька"""
-    base_url = 'https://blockchain.info'
     url = f'{base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
     useragent = get_user_agent()
     headers = {'useragent': useragent}
 
     # делаем апи запрос
     error = ''
-    chunk_size = Config().chunk_size
     try:
         with requests.get(url, headers=headers, proxies=proxy, stream=True) as r:
             r.raise_for_status()
@@ -231,79 +244,131 @@ def requests_chunk_get_transactions(address, limit=200, offset=0, proxy=None) ->
                 with open(temp_file_name, 'rb') as f:
                     txt = f.read()
                 # удалить временный файл
-                if is_remove_tmp:
-                    os.remove(temp_file_name)
-                else:
-                    print(f'tmp_file={temp_file_name}; {address=}; {proxy=}')
+                os.remove(temp_file_name)
 
                 # обработать результат
                 data = json.loads(txt)
                 txs = rawaddr_to_txs(data)
                 tr_df: pd.DataFrame = pd.DataFrame(txs)
                 return tr_df, error
-    except RequestException as ex:
-        error = f'RequestException: {ex}'
     except HTTPError as ex:
-        error = f'HTTPError: {ex}'
+        error = f'HTTPError with porxy: {proxy}; error = "{ex}"'
+    except ChunkedEncodingError as ex:
+        error = f'ChunkedEncodingError with proxy = {proxy} error = "{ex}"'
+    except RequestException as ex:
+        error = f'RequestException with proxy: {proxy}; error= "{ex}"'
     except Exception as ex:
-        error = f'Неизвестная ошибка = {ex}'
+        error = f'Неизвестная ошибка witha porxy: {proxy};  type={type(ex)}; error="{ex}"'
     finally:
         gc.collect()
     return None, error
 
 
-def urllib_get_transactions(address, limit=2000, offset=0, proxy=None) -> tuple[pd.DataFrame | None, str]:
-    def open_url(func: Callable[[Request], HTTPResponse], request: Request):
-        _status_code = -1
-        with func(request) as _response:
-            _status_code = _response.status
-            _body = _response.read()
-            _decoded_body = _body.decode("utf-8")
-        _data = json.loads(_decoded_body) if _status_code == 200 else _decoded_body
-        return _status_code, _data
-
-    base_url = 'https://blockchain.info'
-    _url = f'{base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
+def get_addr_balances(addresses) -> tuple[pd.DataFrame | None, str]:
+    """Вернуть текущие балансы для списка кошельков"""
+    addresses = '|'.join(addresses)
+    url = f'{base_url}/balance?active={addresses}'
     useragent = get_user_agent()
     headers = {'useragent': useragent}
-    _request = Request(_url, headers=headers)
 
-    _func = urlopen
-    if proxy:
-        opener = build_opener(ProxyHandler({'http': f'socks5://{proxy}'}))
-        _func = opener.open
-
-    df = None
+    # делаем апи запрос
+    error = ''
     try:
-        status_code, data = open_url(_func, _request)
-        # print(f'"{address}" {status_code=}, {len(data)=}; "{proxy=}"')
-        match status_code:
-            case 200:
-                txs = rawaddr_to_txs(data)
-                df: pd.DataFrame = pd.DataFrame(txs)
-                error = ''
-            case 524:
-                error = f'status_code={status_code}. The web server timed out before responding. With proxies = {proxy}'
-            case _:
-                error = f'status_code={status_code}. {data}. With proxies = {proxy}'
+        with requests.get(url, headers=headers) as r:
+            r.raise_for_status()
+            if r.ok:
+                # обработать результат
+                _data = r.json()
+                data = []
+                for k, v in _data.items():
+                    v['address'] = k
+                    data.append(v)
+                _df: pd.DataFrame = pd.DataFrame(data)
+                _df['final_balance'] = _df['final_balance'].apply(lambda x: satoshi2btc(x))
+                return _df[['address', 'n_tx', 'final_balance']], error
     except HTTPError as ex:
-        error = ex
+        error = f'HTTPError; error = "{ex}"'
+    except RequestException as ex:
+        error = f'RequestException; error= "{ex}"'
     except Exception as ex:
-        error = f'Неизвестная ошибка = {ex}'
-    return df, error
+        error = f'Неизвестная ошибка; type={type(ex)}; error="{ex}"'
+    finally:
+        gc.collect()
+    return None, error
 
 
 # @profile_mem
-def update_address(upd_line, cat='socks') -> tuple[pd.DataFrame | None, str]:
+def tr2slices(tr_df: pd.DataFrame, df_line: pd.Series, cat_line='update') -> pd.DataFrame | None:
+    """
+    Получить историяю транзакций, создать недостающие срезы
+    :param tr_df: dataframe транзакций в формате bitcoinapi
+    :param df_line: инофрмация о последнем имеющимся в БД срезе
+    :param cat_line: м.б. update or new
+    :return: DataFrame в формате среза slices
+    """
+
+    # оставим только те транзакии которых нет в slices
+    balance_btc_prev = df_line.balance_btc_prev if cat_line == 'update' else 0.0
+
+    if cat_line == 'update':
+        try:
+            idx = tr_df.index[tr_df['balance_btc'] == balance_btc_prev][0]
+            tr_df: pd.DataFrame = tr_df[tr_df.index < idx]
+        except IndexError as ex:         # Если не нашли такой баланс в списке транзакций
+            ts_prev = df_line.ts_prev   # тогда будем искать по метке времени
+            tr_df: pd.DataFrame = tr_df[tr_df.ts > ts_prev]
+
+    tr_df = tr_df.sort_index(ascending=False, ignore_index=True)
+    tr_df['label'] = df_line['label']
+    tr_df['first_tr'] = df_line['first_tr']
+    tr_df['last_tr'] = tr_df['time'].apply(lambda dt: UtcDate.dt2str(dt))
+    tr_df['n_tr'] = df_line['n_tr'] + tr_df.index + 1
+    tr_df['ts'] = tr_df['ts'] - (tr_df['ts'] % 3600)
+    tr_df['time'] = tr_df['ts'].apply(lambda ts: UtcDate.ts2str(ts))
+    tr_df = tr_df.sort_values('ts', ascending=False, ignore_index=True)
+    tr_df = tr_df.drop_duplicates(subset=['time'], ignore_index=True)
+    tr_df['ts_finish'] = tr_df['ts'].shift(1).replace(np.nan, None)
+
+    all_ts = list(tr_df['ts'])
+    binance = BinanceApi()
+    prices = binance.get_prices(all_ts, False)
+
+    tr_df['exchange_rate'] = pd.Series(prices)
+    tr_df['balance_usd'] = round(tr_df['balance_btc'] * tr_df['exchange_rate'], 8)
+    tr_df['cohort'] = tr_df['balance_btc'].apply(lambda btc: get_cohort(btc))
+
+    # prof = prev_balance_btc * (price - prev_price)
+    tr_df['tr_profit'] = round(tr_df['balance_btc'].shift(-1) * (tr_df['exchange_rate'] - tr_df['exchange_rate'].shift(-1)), 8)
+
+    # calc tr_profit для самой первой транзакции в обновлении, она находится в конце dataframe
+    tr_profit = 0.0
+    if cat_line == 'update':
+        last = tr_df.iloc[-1]
+        tr_profit = round(df_line['balance_btc'] * (last['exchange_rate'] - df_line['exchange_rate']), 8)
+    tr_df.loc[tr_df.index[-1], 'tr_profit'] = tr_profit
+
+    tr_df = tr_df.sort_index(ascending=False, ignore_index=True)
+    tr_df['cum_profit'] = tr_df['tr_profit'].cumsum()
+    tr_df['cum_profit'] = tr_df['cum_profit'] + df_line['cum_profit']
+    tr_df['changed'] = False
+
+    df = tr_df.rename(columns={'tx_btc': 'tr_btc', 'block': 'last_block'}, )
+    df = df[['address', 'label', 'tr_btc', 'balance_btc', 'balance_usd', 'first_tr', 'last_tr', 'n_tr', 'time',
+             'ts', 'ts_finish', 'exchange_rate', 'tr_profit', 'cum_profit', 'cohort', 'last_block', 'changed']]
+    return df
+
+
+def update_address(df_line, cat_line='update', cat='socks') -> tuple[pd.DataFrame | None, str]:
     """
     Выполнить обновление кошелька
-    :param upd_line: строка последнего среза кошелька
+    :param df_line: строка последнего среза кошелька
+    :param cat_line: 'update' or 'new', default update
     :param cat: socks | http | None
     :return: успех|не успех, строка с ошибкой
     """
     # вызовем api для получения спска транзакций
-    address = upd_line.address
-    limit = calc_limit(upd_line)
+    address = df_line.address
+    limit = calc_limit(df_line)
     match cat:
         case 'socks':
             proxy = get_socks_proxy()
@@ -315,7 +380,13 @@ def update_address(upd_line, cat='socks') -> tuple[pd.DataFrame | None, str]:
     tr_df, _error = requests_chunk_get_transactions(address, limit, proxy=proxy)
     # tr_df, _error = requests_get_transactions(address, limit, proxy=proxy)
     # tr_df, _error = urllib_get_transactions(address, limit, proxy=proxy)
-    return tr_df, _error
+
+    slice_df = None
+    if _error != '':
+        print(_error)
+        return tr_df, _error
+    slice_df = tr2slices(tr_df, df_line, cat_line)
+    return slice_df, ''
 
 
 def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int, cat: str):
@@ -349,22 +420,17 @@ def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int, cat:
             done_count = done_count + 1
 
     # проверим, есть ли завершенные задачи
-    global is_remove_tmp
-    is_remove_tmp = False
-    seconds = 0
     while len(futures) != 0:
         done = [future for future in futures if future.done()]
         if len(done) == 0:
             time.sleep(1.0)
-            seconds += 1
-            print(f'Waiting {seconds} sec.')
         else:
             for future in done:
                 res, error = future.result()
+                print(f'tr_df={len(res) if isinstance(res, pd.DataFrame) else None}, {error=}')
                 futures.remove(future)
                 done_count = done_count + 1
-                print(f'{start_count=}; {done_count=}')
-                print(f'tr_df={len(res) if isinstance(res, pd.DataFrame) else None}, {error=}')
+                print(f'{done_count=}')
 
     print('wait shutdowt thread pool executor')
     executor.shutdown(wait=True)
@@ -374,19 +440,17 @@ def run_upd_thread_pool_executor(upd_slice: pd.DataFrame, max_workers: int, cat:
 
 @measure_time
 @measure_mem
-def requests_with_socks_proxy(proxy_id):
+def requests_with_proxy(idx):
     address = '35pgGeez3ou6ofrpjt8T7bvC9t6RrUK4p6'
-    base_url = 'https://blockchain.info'
     limit = 50
     offset = 0
     url = f'{base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
 
     useragent = get_user_agent()
     headers = {'useragent': useragent}
-    Request(url, headers=headers)
 
-    proxy = _socks_proxies[proxy_id]
-    proxy = {'socks': f'socks5://{proxy}'}
+    proxy = _socks_proxies[idx]
+    proxy = {'https': f'socks5://{proxy}'}
 
     with requests.Session() as session:
         r = session.get(url, headers=headers, proxies=proxy, stream=True)
@@ -394,72 +458,6 @@ def requests_with_socks_proxy(proxy_id):
         print(f'{status_code=}')
 
     print(f'{url=}; {proxy=}')
-
-
-@measure_time
-@measure_mem
-def urlib_with_proxy(proxy_id):
-    address = '35pgGeez3ou6ofrpjt8T7bvC9t6RrUK4p6'
-    base_url = 'https://blockchain.info'
-    limit = 50
-    offset = 0
-    url = f'{base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
-
-    useragent = get_user_agent()
-    headers = {'useragent': useragent}
-    request = Request(url, headers=headers)
-
-    proxy = _socks_proxies[proxy_id]
-    opener: OpenerDirector = build_opener(ProxyHandler({'socks': f'socks5://{proxy}'}))
-
-    with opener.open(request) as r:
-        status_code = r.status
-        print(f'{status_code=}')
-
-    print(f'{url=}; {proxy=}')
-
-
-@measure_time
-@measure_mem
-def requests_with_chunk(address='bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h'):
-    base_url = 'https://blockchain.info'
-    limit = 2800
-    offset = 0
-    url = f'{base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
-    useragent = get_user_agent()
-    headers = {'useragent': useragent}
-    proxy_str = random.choice(_socks_proxies)
-    proxies = {'socks': f'socks5//{proxy_str}'}
-
-    # делаем апи запрос
-    error = ''
-    chunk_size = 1024 * 20
-    try:
-        with requests.get(url, headers=headers, proxies=proxies, stream=True) as r:
-            r.raise_for_status()
-            temp_file_name = tempfile.mktemp()
-            with open(temp_file_name, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=chunk_size):
-                    f.write(chunk)
-    except HTTPError as ex:
-        error = f'HTTPError {ex}'
-        print(error)
-    except Exception as ex:
-        error = f'Неизвестная ошибка = {ex}'
-        print(error)
-    
-    if error == '':
-        with open(temp_file_name, 'rb') as f:
-            txt = f.read()
-        os.remove(temp_file_name)
-        data = json.loads(txt)
-        txs = rawaddr_to_txs(data)
-        tr_df: pd.DataFrame = pd.DataFrame(txs)
-        print(f'{len(tr_df)=}')
-
-        gc.collect(0)
-        gc.collect(1)
-        gc.collect(2)
 
 
 @measure_time
@@ -496,11 +494,54 @@ def run_thread_pool(max_workers: int, cat: str):
     # run_upd_thread_pool_executor(upd_slice[:50], max_workers, cat=cat)
 
 
+@measure_time
+@measure_mem
+def new_df_balances():
+    """Просто найдем балансы и кол. транзакций для вновь добавленных кошельков"""
+    di_5 = csv2df('step_5')
+    new_slice: pd.DataFrame = di_5['new_slice']
+    assert len(new_slice) == 1549, f'real len={len(new_slice)}'
+
+    addresses = new_slice['address'].tolist()
+    assert len(addresses) == 1549
+
+    slice_size = 200
+    slices = slices_data(addresses)
+    df_balances = None
+    for idx, _slice in enumerate(slices):
+        df, error = get_addr_balances(_slice)
+        if error != '':
+            print(error)
+            return
+
+        assert isinstance(df, pd.DataFrame)
+        df_balances = pd.concat([df_balances, df])
+        print(f'{idx=}; total count = {(idx+1) * slice_size} of {len(addresses)}')
+
+    # удалить не конечным балансом меньше 1 btc
+    print(len(df_balances))
+    is_great_one_btc = df_balances['final_balance'] >= 1.0
+    df_balances = df_balances[is_great_one_btc]
+    print(len(df_balances))
+
+
+@measure_time
+@measure_mem
+def main():
+    """Найдем все транзакции для одного кошелька"""
+    di_5 = csv2df('step_5')
+    new_slice: pd.DataFrame = di_5['new_slice']
+    new_line = new_slice.loc[1414]
+
+    slice_df, error = update_address(new_line, cat='socks', cat_line='new')
+    print(f'{len(slice_df)=}')
+
+
 if __name__ == '__main__':
-    run_thread_pool(8, 'socks')     # запусить обработку с socks прокси
-    # run_thread_pool(4, 'http')      # запусить обработку с http прокси
-    # requests_with_socks_proxy(proxy_id=0)
-    # urlib_with_proxy(proxy_id=8)
+    main()
+    # run_thread_pool(10, 'socks')  # запусить обработку с socks прокси
+    # пробуем работу urllib_get_transactions
+    # urllib_get()
+    # requests_with_proxy(0)
+    # urlib_with_proxy(8)
     # try_requests_with_http_proxy()
-    # requests_with_chunk()
-    pass

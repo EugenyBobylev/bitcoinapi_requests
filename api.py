@@ -1,15 +1,18 @@
-import copy
+import gc
+import json
+import os
+import random
+import tempfile
 import time
 
 import pandas as pd
 import requests
-
 from fake_useragent import UserAgent
-from requests.exceptions import ChunkedEncodingError
+from requests.exceptions import ChunkedEncodingError, RequestException, HTTPError
 from urllib3.exceptions import ConnectTimeoutError
 
 from config import Config
-from utils import UtcDate
+from utils import satoshi2btc, UtcDate
 
 
 class BantProxy:
@@ -79,49 +82,113 @@ class BitcoinApi:
         self.socks_proxies: list[BantProxy] = [BantProxy(proxy, 10) for proxy in Config().socks_proxies]
         self.http_proxies: list[BantProxy] = [BantProxy(proxy, 10) for proxy in Config().http_proxies]
 
-        self.with_proxy = False                   # признак использования прокси в запросе данных через инет
+        self.with_proxy = False                   # признак использования прокси запросе данных через инет
 
-    def get_transactions(self, address, limit=200, offset=0, use_proxy: str = '') -> tuple[pd.DataFrame | None, str]:
+    def get_addr_balances(self, addresses) -> tuple[pd.DataFrame | None, str]:
+        """Вернуть текущие балансы для списка кошельков"""
+        addresses = '|'.join(addresses)
+        url = f'{self.base_url}/balance?active={addresses}'
+        useragent = self.get_user_agent()
+        headers = {'useragent': useragent}
+
+        # делаем апи запрос
+        error = ''
+        try:
+            with requests.get(url, headers=headers) as r:
+                r.raise_for_status()
+                if r.ok:
+                    # обработать результат
+                    _data = r.json()
+                    data = []
+                    for k, v in _data.items():
+                        v['address'] = k
+                        data.append(v)
+                    _df: pd.DataFrame = pd.DataFrame(data)
+                    _df['final_balance'] = _df['final_balance'].apply(lambda x: satoshi2btc(x))
+                    return _df[['address', 'n_tx', 'final_balance']], error
+        except HTTPError as ex:
+            error = f'HTTPError; error = "{ex}"'
+        # except ChunkedEncodingError as ex:
+        #     error = f'ChunkedEncodingError error = "{ex}"'
+        except RequestException as ex:
+            error = f'RequestException; error= "{ex}"'
+        except ConnectTimeoutError:
+            error = f'ConnectTimeoutError'
+        except Exception as ex:
+            error = f'Неизвестная ошибка; type={type(ex)}; error="{ex}"'
+        finally:
+            gc.collect()
+        return None, error
+
+    def get_transactions(self, address, limit=200, offset=0, proxy=None) -> tuple[pd.DataFrame | None, str]:
         """Запросить и вернуть транзакции по заданному адресу кошелька"""
         url = f'{self.base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
         useragent = self.get_user_agent()
         headers = {'useragent': useragent}
 
-        match use_proxy:
-            case 'socks':
-                proxy_str = self.get_proxy(cat='socks')
-                proxy = {'socks': f'socks5://{proxy_str}'}
-            case 'http':
-                proxy_str = self.get_proxy(cat='http')
-                proxy = {'http': f'http://{proxy_str}'}
-            case _:
-                proxy_str = None
-                proxy = None
-
         # делаем апи запрос
+        error = ''
         try:
-            # with requests.get(url, headers=headers, proxies=proxy, stream=True) as r:
-            with requests.Session() as session:
-                r = session.get(url, headers=headers, proxies=proxy, stream=True)
-                status_code = r.status_code
-                if status_code == 200:
+            with requests.get(url, headers=headers, proxies=proxy, stream=True) as r:
+                r.raise_for_status()
+                if r.ok:
                     data = r.json()
                     txs = self.rawaddr_to_txs(data)
-                    df: pd.DataFrame = pd.DataFrame(txs)
-                    return df, ''
-                if status_code == 429:
-                    error = f'status_code={status_code}. Too Many Requests.  With proxies = {proxy_str}'
-                elif status_code == 524:
-                    error = (f'status_code={status_code}. The web server timed out before responding. '
-                             f'With proxies = {proxy_str}')
-                else:
-                    error = f'status_code={status_code}. {r.text}. With proxies = {proxy_str}'
-        except ConnectTimeoutError:
-            error = f'ConnectTimeoutError with proxy = {proxy_str}'
+                    tr_df: pd.DataFrame = pd.DataFrame(txs)
+                    return tr_df, error
+        except HTTPError as ex:
+            error = f'HTTPError with porxy: {proxy}; error = "{ex}"'
         except ChunkedEncodingError as ex:
-            error = f'ChunkedEncodingError with proxy = {proxy_str} error = "{ex}"'
+            error = f'ChunkedEncodingError with proxy = {proxy} error = "{ex}"'
+        except RequestException as ex:
+            error = f'RequestException with proxy: {proxy}; error= "{ex}"'
+        except ConnectTimeoutError:
+            error = f'ConnectTimeoutError with proxy = {proxy}'
         except Exception as ex:
-            error = f'Неизвестная ошибка = "{ex}"'
+            error = f'Неизвестная ошибка witha porxy: {proxy};  type={type(ex)}; error="{ex}"'
+        finally:
+            gc.collect()
+        return None, error
+
+    def requests_chunk_get_transactions(self, address, limit=200, offset=0, proxy=None,
+                                        chunk_size: int = 10240) -> tuple[pd.DataFrame | None, str]:
+        """Запросить и вернуть транзакции по заданному адресу кошелька"""
+        url = f'{self.base_url}/rawaddr/{address}/?limit={limit}&offset={offset}'
+        useragent = self.get_user_agent()
+        headers = {'useragent': useragent}
+
+        # делаем апи запрос
+        error = ''
+        try:
+            with requests.get(url, headers=headers, proxies=proxy, stream=True) as r:
+                r.raise_for_status()
+                if r.ok:
+                    temp_file_name = tempfile.mktemp()
+                    with open(temp_file_name, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=chunk_size):
+                            f.write(chunk)
+
+                    # прочитать результат
+                    with open(temp_file_name, 'rb') as f:
+                        txt = f.read()
+                    # удалить временный файл
+                    os.remove(temp_file_name)
+
+                    # обработать результат
+                    data = json.loads(txt)
+                    txs = self.rawaddr_to_txs(data)
+                    tr_df: pd.DataFrame = pd.DataFrame(txs)
+                    return tr_df, error
+        except HTTPError as ex:
+            error = f'HTTPError with porxy: {proxy}; error = "{ex}"'
+        except ChunkedEncodingError as ex:
+            error = f'ChunkedEncodingError with proxy = {proxy} error = "{ex}"'
+        except RequestException as ex:
+            error = f'RequestException with proxy: {proxy}; error= "{ex}"'
+        except Exception as ex:
+            error = f'Неизвестная ошибка witha porxy: {proxy};  type={type(ex)}; error="{ex}"'
+        finally:
+            gc.collect()
         return None, error
 
     def get_proxy(self, cat: str):
@@ -169,4 +236,19 @@ class BitcoinApi:
                 'tx_index': tx['tx_index'],
                 'ts': tx['time'],
             } for tx in txs]
-        return copy.deepcopy(txs)
+        return txs
+
+
+class BinanceApi:
+    def __init__(self):
+        pass
+
+    def get_prices(self, all_ts: list[int], is_binance_ts: bool) -> list[float | None]:
+        if not is_binance_ts:
+            all_ts = [UtcDate.ts2binance_ts(ts) for ts in all_ts]
+
+        results = []
+        for ts in all_ts:
+            price = random.choice([35800.0, 34900.0, 37700.0, 39389.05, 42700.0, 43100.0, 55900.0])
+            results.append(price)
+        return results
