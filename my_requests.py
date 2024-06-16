@@ -496,38 +496,7 @@ def run_thread_pool(max_workers: int, cat: str):
 
 @measure_time
 @measure_mem
-def new_df_balances():
-    """Просто найдем балансы и кол. транзакций для вновь добавленных кошельков"""
-    di_5 = csv2df('step_5')
-    new_slice: pd.DataFrame = di_5['new_slice']
-    assert len(new_slice) == 1549, f'real len={len(new_slice)}'
-
-    addresses = new_slice['address'].tolist()
-    assert len(addresses) == 1549
-
-    slice_size = 200
-    slices = slices_data(addresses)
-    df_balances = None
-    for idx, _slice in enumerate(slices):
-        df, error = get_addr_balances(_slice)
-        if error != '':
-            print(error)
-            return
-
-        assert isinstance(df, pd.DataFrame)
-        df_balances = pd.concat([df_balances, df])
-        print(f'{idx=}; total count = {(idx+1) * slice_size} of {len(addresses)}')
-
-    # удалить не конечным балансом меньше 1 btc
-    print(len(df_balances))
-    is_great_one_btc = df_balances['final_balance'] >= 1.0
-    df_balances = df_balances[is_great_one_btc]
-    print(len(df_balances))
-
-
-@measure_time
-@measure_mem
-def main():
+def update_new_address():
     """Найдем все транзакции для одного кошелька"""
     di_5 = csv2df('step_5')
     new_slice: pd.DataFrame = di_5['new_slice']
@@ -537,11 +506,24 @@ def main():
     print(f'{len(slice_df)=}')
 
 
+@measure_time
+def main():
+    """
+    Реализуем процесс обработки  обновленных и новых кошельков
+    """
+
+    # загрузим обновленные и новые кошельки
+    di_5 = csv2df('step_5')
+    upd_slice: pd.DataFrame = di_5['upd_slice']
+    new_slice: pd.DataFrame = di_5['new_slice']
+    assert len(upd_slice) == 405
+    assert len(new_slice) == 1549
+    pass
+
+
 if __name__ == '__main__':
     main()
+    # update_new_address()
     # run_thread_pool(10, 'socks')  # запусить обработку с socks прокси
-    # пробуем работу urllib_get_transactions
-    # urllib_get()
     # requests_with_proxy(0)
-    # urlib_with_proxy(8)
     # try_requests_with_http_proxy()
