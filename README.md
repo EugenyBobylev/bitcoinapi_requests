@@ -9,4 +9,5 @@ pip install requests[socks]
 pip install pyarrow
 pip install pandas
 pip install psutil
+pip install watchdog
 ```
