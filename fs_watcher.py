@@ -33,7 +33,8 @@ class ExtHandler(FileSystemEventHandler):
             print(f"File {event.src_path} has been deleted")
 
 
-if __name__ == '__main__':
+def watch_file_system():
+    """Start watching File System """
     # Specify the path of the directory you want to watch
     directory_path = Config().app_dir + '/data'
 
@@ -53,3 +54,7 @@ if __name__ == '__main__':
     finally:
         observer.stop()   # Stop
         observer.join()   # Clean up
+
+
+if __name__ == '__main__':
+    watch_file_system()
