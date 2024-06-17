@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import time
+from multiprocessing import Queue
 from urllib.error import HTTPError
 from concurrent.futures import ThreadPoolExecutor
 import random
@@ -511,14 +512,24 @@ def main():
     """
     Реализуем процесс обработки  обновленных и новых кошельков
     """
-
     # загрузим обновленные и новые кошельки
     di_5 = csv2df('step_5')
     upd_slice: pd.DataFrame = di_5['upd_slice']
     new_slice: pd.DataFrame = di_5['new_slice']
     assert len(upd_slice) == 405
     assert len(new_slice) == 1549
-    pass
+    
+    queue = Queue()
+
+    print('*' * 20 + ' update slice ' + '*' * 40)
+    upd_count = 0
+    upd_slice.to_csv('data/curr_upd.csv', sep=';', index=False)
+    for idx, row in upd_slice.iterrows():
+        upd_count += 1
+        print(f'upd done = {upd_count}; {row.address}')
+    print()
+    print('*' * 20 + ' new slice ' + '*' * 40)
+    print('finish')
 
 
 if __name__ == '__main__':
