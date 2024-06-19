@@ -10,4 +10,7 @@ pip install pyarrow
 pip install pandas
 pip install psutil
 pip install watchdog
+# DB Postgres
+pip install psycopg2-binary
+pip install asyncpg
 ```

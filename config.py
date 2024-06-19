@@ -22,6 +22,13 @@ class Config(metaclass=SingletonMeta):
 
         self.app_dir: str = str(Path(script_path).parent)
 
+        # database
+        self.dbuser: str = os.getenv('DB_USER', None)
+        self.dbpassword: str = os.getenv('DB_PASSWORD', None)
+        self.dbhost: str = os.getenv('DB_HOST', None)
+        self.dbport: str = os.getenv('DB_PORT', None)
+        self.database: str = os.getenv('DATABASE', None)
+
         # proxies socks and http
         self.socks_proxies: list[str] = self._load_proxies_('socks')
         self.http_proxies: list[str] = self._load_proxies_('http')
@@ -38,3 +45,18 @@ class Config(metaclass=SingletonMeta):
             lines = f.readlines()
         lst = [line[0:-1] for line in lines if not line.startswith('#')]
         return lst
+
+    def get_postgres_url(self, pgasync=True) -> str:
+        """Get default postgresql url"""
+        _url = ''
+        if self.dbuser and self.dbpassword and self.dbhost and self.database and self.dbport:
+            pg = 'postgresql+asyncpg://' if pgasync else 'postgresql+psycopg2://'
+            _url = f'{pg}{self.dbuser}:{self.dbpassword}@{self.dbhost}:{self.dbport}/{self.database}'
+        return _url
+
+    def get_asyncpg_url(self) -> str:
+        """Get default asyncpg url"""
+        _url = ''
+        if self.dbuser and self.dbpassword and self.dbhost and self.database and self.dbport:
+            _url = f'postgresql://{self.dbuser}:{self.dbpassword}@{self.dbhost}:{self.dbport}/{self.database}'
+        return _url
