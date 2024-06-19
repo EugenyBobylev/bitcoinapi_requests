@@ -13,4 +13,6 @@ pip install watchdog
 # DB Postgres
 pip install psycopg2-binary
 pip install asyncpg
+
+pip install pgnotify
 ```
