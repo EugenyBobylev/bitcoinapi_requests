@@ -16,21 +16,21 @@ class ExtHandler(FileSystemEventHandler):
         items = src_path.split('.')
         return f'.{items[-1]}' if len(items) > 1 else ''
 
-    def on_modified(self, event):
-        if self._get_ext(event.src_path) in self.ext:
-            print(f"File {event.src_path} has been modified")
+    # def on_modified(self, event):
+    #     if self._get_ext(event.src_path) in self.ext:
+    #         print(f"File {event.src_path} has been modified")
 
-    def on_moved(self, event):
-        if self._get_ext(event.src_path) in self.ext:
-            print(f"File {event.src_path} has been moved")
+    # def on_moved(self, event):
+    #     if self._get_ext(event.src_path) in self.ext:
+    #         print(f"File {event.src_path} has been moved")
 
     def on_created(self, event):
         if self._get_ext(event.src_path) in self.ext:
             print(f"File {event.src_path} has been created")
 
-    def on_deleted(self, event):
-        if self._get_ext(event.src_path) in self.ext:
-            print(f"File {event.src_path} has been deleted")
+    # def on_deleted(self, event):
+    #     if self._get_ext(event.src_path) in self.ext:
+    #         print(f"File {event.src_path} has been deleted")
 
 
 def watch_file_system():
@@ -57,4 +57,7 @@ def watch_file_system():
 
 
 if __name__ == '__main__':
-    watch_file_system()
+    f = '/home/bobylev/PycharmProjects/bitcoinapi_requests/data/1715101200_parser.txt'
+    items = f.split('/')
+    print(items[-1])
+    # watch_file_system()
